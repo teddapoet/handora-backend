@@ -19,6 +19,13 @@ app.add_middleware(
     allow_credentials=True,
 )
 
+class Finger(str, Enum):
+    thumb = "thumb"
+    index = "index"
+    middle = "middle"
+    ring = "ring"   
+    pinky = "pinky"
+    
 class GameKey(str, Enum):
     piano_tiles = "piano_tiles"
     space_invader = "space_invader"
@@ -32,7 +39,10 @@ class SessionStartPayload(BaseModel):
     game_key: GameKey
 
 class WarmupPayload(BaseModel):
-    warmup_max_flex: float = Field(gt=0, description="Max flex angle measured during warmup (degrees)")
+    baseline_by_finger: Optional[Dict[str, float]] = Field(
+        default=None,
+        description="Per-finger baseline flex (degrees). Keys like 'thumb','index','middle','ring','pinky'.",
+    )
 
 # Event payload for recording events, fits for all games
 class EventPayload(BaseModel):
@@ -52,7 +62,7 @@ class FinishPayload(EventPayload):
 
 class SessionDetail(BaseModel):
     score: Optional[int] = None
-    baseline: Optional[float] = None
+    baseline_by_finger: Optional[Dict[str, float]] = None
     game_key: Optional[GameKey] = None
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
@@ -74,7 +84,7 @@ def start_session(payload: SessionStartPayload) -> SessionStartResponse:
         "started_at": now,
         "finished_at": None,
         "game_key": payload.game_key,
-        "baseline": None,
+        "baseline_by_finger": None,
         "events": [],  # type: List[EventPayload]
         "score": None,
         "metrics": None,
@@ -83,12 +93,13 @@ def start_session(payload: SessionStartPayload) -> SessionStartResponse:
 
 
 @app.post("/api/v1/sessions/{session_id}/warmup")
-def set_warmup_baseline(session_id: str, payload: WarmupPayload) -> Dict[str, float]:
+def set_warmup_baseline(session_id: str, payload: WarmupPayload) -> Dict[str, Dict[str, float]]:
     session = SESSIONS.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session is not found in our database")
-    session["baseline"] = payload.warmup_max_flex
-    return {"baseline": payload.warmup_max_flex}
+    if payload.baseline_by_finger is not None:
+        session["baseline_by_finger"] = payload.baseline_by_finger
+    return {"baseline_by_finger": session.get("baseline_by_finger") or {}}
 
 
 @app.post("/api/v1/sessions/{session_id}/events")
@@ -116,7 +127,7 @@ def finish_session(session_id: str, payload: FinishPayload) -> EventPayload:
     }
     session["metrics"] = metrics
 
-    return EventPayload(**metrics)
+    return EventPayload(metrics=metrics)
 
 
 @app.get("/api/v1/sessions/{session_id}", response_model=SessionDetail)
@@ -125,7 +136,7 @@ def get_session(session_id: str) -> SessionDetail:
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return SessionDetail(
-        baseline=session.get("baseline"),
+        baseline_by_finger=session.get("baseline_by_finger"),
         score=session.get("score"),
         game_key=session.get("game_key"),
         started_at=session.get("started_at"),
