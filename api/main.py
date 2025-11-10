@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 import os
 from fastapi import status
 from supabase import create_client, Client
+from google import genai
+import json
 
 load_dotenv()
 
@@ -16,6 +18,10 @@ app = FastAPI(
     title="Handora Games API",
     description="API for Handora Games",
 )
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])  
+GEMINI_MODEL_ID = "gemini-2.5-flash"
 
 # Initialize Supabase client (prefer service role key on server)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -47,6 +53,9 @@ class GameKey(str, Enum):
     piano_tiles = "piano_tiles"
     space_invader = "space_invader"
     dinosaur = "dinosaur"
+
+class LLMResp(BaseModel):
+    analysis: str
 
 # Pydantic models for checking and validation (minimal)
 class SessionStartResponse(BaseModel):
@@ -233,3 +242,27 @@ def get_highscores() -> Dict[str, int]:
         "2": max_by_game[GameKey.space_invader] or 0,
         "3": max_by_game[GameKey.dinosaur] or 0,
     }
+
+@app.post("/api/v1/analytics/analyze", response_model=LLMResp)
+def analyze_metrics(payload: EventPayload) -> LLMResp:
+    if not gemini_client:
+        raise HTTPException(status_code=503, detail="Gemini not configured")
+
+    system_prompt = (
+        "You are a rehab game assistant. Analyze the provided single-session metrics "
+        "for a player's hand usage. Avoid medical diagnosis as you are not really a doctor; use neutral language "
+        "like 'may indicate' or 'appears'. Focus on accuracy, rom_percent, flex_angle, "
+        "reaction_time, smoothness, and score if present. Provide 3–5 sentences plus 1–2 "
+        "actionable tips. Keep it concise."
+    )
+
+    metrics_json = json.dumps(payload.model_dump(exclude_none=True))
+
+    try:
+        resp = gemini_client.models.generate_content(
+            model=GEMINI_MODEL_ID,
+            contents=f"{system_prompt}\n\nMETRICS_JSON:\n{metrics_json}"
+        )
+        return LLMResp(analysis=(resp.text or "").strip())
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Gemini error: {e}")
